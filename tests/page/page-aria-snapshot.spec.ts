@@ -459,12 +459,13 @@ it('AR-022 should ignore presentation and none roles', async ({ page }) => {
   `);
 });
 
-it('AR-023 should treat input value as text in templates, but not for checkbox/radio/file', async ({ page }) => {
+it('AR-023 should treat input value as text in templates, but not for checkbox/radio/file/password', async ({ page }) => {
   await page.setContent(`
     <input value='hello world'>
     <input type=file>
     <input type=checkbox checked>
     <input type=radio checked>
+    <input type=password value='secret'>
   `);
 
   await checkAndMatchSnapshot(page.locator('body'), `
@@ -472,6 +473,7 @@ it('AR-023 should treat input value as text in templates, but not for checkbox/r
     - button "Choose File"
     - checkbox [checked]
     - radio [checked]
+    - textbox
   `);
 });
 

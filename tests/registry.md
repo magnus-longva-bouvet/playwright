@@ -162,7 +162,7 @@ subsystem, add a row to the Subsystems table. Then update this file:
 | `AR-020` | `page/page-aria-snapshot.spec.ts` | should include pseudo codepoints |
 | `AR-021` | `page/page-aria-snapshot.spec.ts` | check aria-hidden text |
 | `AR-022` | `page/page-aria-snapshot.spec.ts` | should ignore presentation and none roles |
-| `AR-023` | `page/page-aria-snapshot.spec.ts` | should treat input value as text in templates, but not for checkbox/radio/file |
+| `AR-023` | `page/page-aria-snapshot.spec.ts` | should treat input value as text in templates, but not for checkbox/radio/file/password |
 | `AR-024` | `page/page-aria-snapshot.spec.ts` | should not use on as checkbox value |
 | `AR-025` | `page/page-aria-snapshot.spec.ts` | should respect aria-owns |
 | `AR-026` | `page/page-aria-snapshot.spec.ts` | should be ok with circular ownership |
