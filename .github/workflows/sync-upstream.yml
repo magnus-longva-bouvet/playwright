@@ -1,0 +1,82 @@
+name: Sync with upstream
+
+on:
+  schedule:
+    - cron: '23 4 * * *'
+  workflow_dispatch:
+    inputs:
+      test_alert:
+        description: Fail on purpose to test the mention
+        type: boolean
+        default: false
+
+permissions:
+  actions: write
+  issues: write
+
+concurrency: sync-upstream
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      ISSUE_TITLE: Sync with upstream failed
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Merge microsoft/playwright main into main
+        env:
+          SYNC_DEPLOY_KEY: ${{ secrets.SYNC_DEPLOY_KEY }}
+        run: |
+          set -u
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$SYNC_DEPLOY_KEY" > ~/.ssh/sync_key
+          chmod 600 ~/.ssh/sync_key
+          gh api meta --jq '.ssh_keys[] | "github.com " + .' > ~/.ssh/known_hosts
+          export GIT_SSH_COMMAND='ssh -i ~/.ssh/sync_key -o IdentitiesOnly=yes'
+          git clone --quiet --filter=blob:none --no-checkout --single-branch --branch main "git@github.com:$GH_REPO.git" fork
+          cd fork
+          git fetch --quiet --no-tags https://github.com/microsoft/playwright.git main
+          upstream=$(git rev-parse FETCH_HEAD)
+          if git merge-base --is-ancestor "$upstream" HEAD; then
+            echo "main already contains microsoft/playwright@$upstream"
+            exit 0
+          fi
+          if ! git merge-tree --write-tree HEAD "$upstream" > merge.out; then
+            cat merge.out
+            exit 1
+          fi
+          commit=$(git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            commit-tree "$(head -n 1 merge.out)" -p HEAD -p "$upstream" -m 'Merge microsoft/playwright main')
+          git push --quiet origin "$commit:refs/heads/main"
+          echo "merged microsoft/playwright@$upstream as $commit"
+
+      - name: Keep the other workflows disabled
+        if: always()
+        run: |
+          gh workflow list --all --json path,state \
+            --jq '.[] | select(.state == "active" and (.path | startswith(".github/workflows/")) and .path != ".github/workflows/sync-upstream.yml") | .path' |
+            while read -r path; do gh workflow disable "${path##*/}"; done
+
+      - name: Fail on purpose
+        if: inputs.test_alert
+        run: exit 1
+
+      - name: Mention the owner
+        if: failure()
+        run: |
+          body="@${{ github.repository_owner }} merging microsoft/playwright main into main failed: $RUN_URL"
+          issue=$(gh issue list --state open --limit 100 --json number,title --jq '[.[] | select(.title == env.ISSUE_TITLE)][0].number // empty')
+          if [ -n "$issue" ]; then
+            gh issue comment "$issue" --body "$body"
+          else
+            gh issue create --title "$ISSUE_TITLE" --body "$body"
+          fi
+
+      - name: Close the failure issue
+        if: success()
+        run: |
+          gh issue list --state open --limit 100 --json number,title --jq '.[] | select(.title == env.ISSUE_TITLE) | .number' |
+            while read -r number; do gh issue close "$number" --comment "Merged again: $RUN_URL"; done
