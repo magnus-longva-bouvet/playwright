@@ -16,6 +16,10 @@ permissions:
 
 concurrency: sync-upstream
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   sync:
     runs-on: ubuntu-latest
