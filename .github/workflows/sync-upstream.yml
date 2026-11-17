@@ -1,0 +1,105 @@
+name: Sync with upstream
+
+on:
+  schedule:
+    - cron: '23 4 * * *'
+  workflow_dispatch:
+    inputs:
+      test_alert:
+        description: Fail on purpose to test the mention
+        type: boolean
+        default: false
+
+permissions:
+  actions: write
+  issues: write
+
+concurrency: sync-upstream
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      ISSUE_TITLE: Sync with upstream failed
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Rebuild main on the latest microsoft/playwright release
+        env:
+          SYNC_DEPLOY_KEY: ${{ secrets.SYNC_DEPLOY_KEY }}
+        run: |
+          set -u
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$SYNC_DEPLOY_KEY" > ~/.ssh/sync_key
+          chmod 600 ~/.ssh/sync_key
+          gh api meta --jq '.ssh_keys[] | "github.com " + .' > ~/.ssh/known_hosts
+          export GIT_SSH_COMMAND='ssh -i ~/.ssh/sync_key -o IdentitiesOnly=yes'
+          release=$(gh api repos/microsoft/playwright/releases/latest --jq .tag_name)
+          git clone --quiet --filter=blob:none --no-checkout "git@github.com:$GH_REPO.git" fork
+          cd fork
+          git fetch --quiet --no-tags https://github.com/microsoft/playwright.git "refs/tags/$release"
+          new_base=$(git rev-parse 'FETCH_HEAD^{commit}')
+          old_base=$(git rev-parse origin/upstream-release)
+          if [ "$new_base" = "$old_base" ]; then
+            echo "main is already built on $release"
+            exit 0
+          fi
+          tip=$new_base
+          for commit in $(git rev-list --reverse --no-merges "$old_base..origin/main"); do
+            subject=$(git log -1 --format='%h %s' "$commit")
+            if ! git merge-tree --write-tree --merge-base="$commit^" "$tip" "$commit" > merge.out; then
+              echo "$subject does not apply on $release:"
+              cat merge.out
+              exit 1
+            fi
+            tree=$(head -n 1 merge.out)
+            if [ "$tree" = "$(git rev-parse "$tip^{tree}")" ]; then
+              echo "dropping $subject: $release already has it"
+              continue
+            fi
+            tip=$(GIT_AUTHOR_NAME=$(git log -1 --format=%an "$commit") \
+              GIT_AUTHOR_EMAIL=$(git log -1 --format=%ae "$commit") \
+              GIT_AUTHOR_DATE=$(git log -1 --format=%aI "$commit") \
+              GIT_COMMITTER_NAME='github-actions[bot]' \
+              GIT_COMMITTER_EMAIL='41898282+github-actions[bot]@users.noreply.github.com' \
+              git commit-tree "$tree" -p "$tip" -m "$(git log -1 --format=%B "$commit")")
+          done
+          git push --quiet --atomic \
+            --force-with-lease="main:$(git rev-parse origin/main)" \
+            --force-with-lease="upstream-release:$old_base" \
+            origin "$tip:refs/heads/main" "$new_base:refs/heads/upstream-release"
+          echo "rebuilt main on $release as $tip"
+
+      - name: Keep the other workflows disabled
+        if: always()
+        run: |
+          gh workflow list --all --json path,state \
+            --jq '.[] | select(.state == "active" and (.path | startswith(".github/workflows/")) and .path != ".github/workflows/sync-upstream.yml") | .path' |
+            while read -r path; do gh workflow disable "${path##*/}"; done
+
+      - name: Fail on purpose
+        if: inputs.test_alert
+        run: exit 1
+
+      - name: Mention the owner
+        if: failure()
+        run: |
+          body="@${{ github.repository_owner }} rebuilding main on the latest microsoft/playwright release failed: $RUN_URL"
+          issue=$(gh issue list --state open --limit 100 --json number,title --jq '[.[] | select(.title == env.ISSUE_TITLE)][0].number // empty')
+          if [ -n "$issue" ]; then
+            gh issue comment "$issue" --body "$body"
+          else
+            gh issue create --title "$ISSUE_TITLE" --body "$body"
+          fi
+
+      - name: Close the failure issue
+        if: success()
+        run: |
+          gh issue list --state open --limit 100 --json number,title --jq '.[] | select(.title == env.ISSUE_TITLE) | .number' |
+            while read -r number; do gh issue close "$number" --comment "Succeeded again: $RUN_URL"; done
